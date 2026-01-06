@@ -3235,3 +3235,175 @@ CJSON_PUBLIC(void) cJSON_free(void *object)
     global_hooks.deallocate(object);
     object = NULL;
 }
+
+static size_t printlen_escaped_string_len(const unsigned char *input);
+static size_t printlen_number_len(const cJSON *item);
+static size_t printlen_array_unformatted(const cJSON *item);
+static size_t printlen_object_unformatted(const cJSON *item);
+static size_t printlen_value_unformatted(const cJSON *item);
+
+/* Determine the required size for the printing the string */
+static size_t printlen_escaped_string_len(const unsigned char *input)
+{
+    /* This returns the length of the JSON string INCLUDING the surrounding quotes. */
+    size_t len = 2; /* opening + closing quote */
+
+    if (input == NULL) {
+        /* cJSON prints "" for NULL string pointers in most contexts */
+        return len;
+    }
+
+    for (const unsigned char *p = input; *p; p++) {
+        const unsigned char c = *p;
+
+        switch (c) {
+            case '\"':
+            case '\\':
+                len += 2; /* \" or \\ */
+                break;
+
+            case '\b':
+            case '\f':
+            case '\n':
+            case '\r':
+            case '\t':
+                len += 2; /* \b \f \n \r \t */
+                break;
+
+            default:
+                if (c < 32U) {
+                    /* Control chars printed as \u00XX => 6 bytes */
+                    len += 6;
+                } else {
+                    /* Regular UTF-8 byte emitted as-is */
+                    len += 1;
+                }
+                break;
+        }
+    }
+
+    return len;
+}
+
+/* Determine the required size for the printing the number */
+static size_t printlen_number_len(const cJSON *item)
+{
+    /* Reuse the print_number function to be sure the correct length is achieved */
+    unsigned char tmp[64];
+    printbuffer pb;
+    pb.buffer  = tmp;
+    pb.length  = sizeof(tmp);
+    pb.offset  = 0;
+    pb.noalloc = 1;   /* do not allocate */
+    pb.format  = 0;
+
+    /* Call the internal print_number() used by print_value(). */
+    if (!print_number(item, &pb)) {
+        return 0;
+    }
+
+    return pb.offset; /* print_number does not append '\0' itself */
+}
+
+/* Determine the required size for the printing the array */
+static size_t printlen_array_unformatted(const cJSON *item)
+{
+    size_t len = 2; /* [ ] */
+
+    const cJSON *child = item->child;
+    while (child) {
+        size_t child_len = printlen_value_unformatted(child);
+        if (child_len == 0) {
+            return 0;
+        }
+        len += child_len;
+
+        child = child->next;
+        if (child) {
+            len += 1; /* comma */
+        }
+    }
+
+    return len;
+}
+
+/* Determine the required size for the printing the object */
+static size_t printlen_object_unformatted(const cJSON *item)
+{
+    size_t len = 2; /* { } */
+
+    const cJSON *child = item->child;
+    while (child) {
+        /* key */
+        len += printlen_escaped_string_len((const unsigned char *)child->string);
+
+        len += 1; /* colon */
+
+        /* value */
+        size_t vlen = printlen_value_unformatted(child);
+        if (vlen == 0) {
+            return 0;
+        }
+        len += vlen;
+
+        child = child->next;
+        if (child) {
+            len += 1; /* comma */
+        }
+    }
+
+    return len;
+}
+
+/* Determine the required size for the printing the value */
+static size_t printlen_value_unformatted(const cJSON *item)
+{
+    if (item == NULL) {
+        return 0;
+    }
+
+    /* Note: cJSON stores type in the lower 8 bits typically */
+    const int type = item->type & 0xFF;
+
+    switch (type) {
+        case cJSON_NULL:
+            return 4; /* "null" */
+        case cJSON_False:
+            return 5; /* "false" */
+        case cJSON_True:
+            return 4; /* "true" */
+
+        case cJSON_Number: {
+            size_t nlen = printlen_number_len(item);
+            return nlen; /* already exact */
+        }
+
+        case cJSON_Raw:
+            /* raw printed as-is (no quotes) */
+            return (item->valuestring != NULL) ? strlen(item->valuestring) : 0;
+
+        case cJSON_String:
+            return printlen_escaped_string_len((const unsigned char *)item->valuestring);
+
+        case cJSON_Array:
+            return printlen_array_unformatted(item);
+
+        case cJSON_Object:
+            return printlen_object_unformatted(item);
+
+        default:
+            return 0;
+    }
+}
+
+CJSON_PUBLIC(size_t) cJSON_PrintLen(const cJSON *item)
+{
+    /* Return required buffer size INCLUDING terminating '\0' */
+    size_t len = printlen_value_unformatted(item);
+    if (len == 0) {
+        return 0;
+    }
+    return len + 2;
+}
+
+
