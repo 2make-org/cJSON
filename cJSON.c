@@ -472,6 +472,9 @@ typedef struct
     cJSON_bool noalloc;
     cJSON_bool format; /* is this print a formatted print */
     internal_hooks hooks;
+    cJSON_write_cb write_cb; /* optional flush target when the noalloc buffer fills up */
+    void *write_ctx;
+    size_t flushed; /* bytes already handed to write_cb */
 } printbuffer;
 
 /* realloc printbuffer if necessary to have at least "needed" bytes more */
@@ -504,6 +507,21 @@ static unsigned char* ensure(printbuffer * const p, size_t needed)
     }
 
     if (p->noalloc) {
+        /* streamed mode: hand the finished bytes to the callback and reuse the buffer */
+        if ((p->write_cb != NULL) && (p->offset > 0))
+        {
+            if (p->write_cb(p->write_ctx, (const char*)p->buffer, p->offset) != 0)
+            {
+                return NULL;
+            }
+            p->flushed += p->offset;
+            needed -= p->offset;
+            p->offset = 0;
+            if (needed <= p->length)
+            {
+                return p->buffer;
+            }
+        }
         return NULL;
     }
 
@@ -1357,7 +1375,7 @@ CJSON_PUBLIC(char *) cJSON_PrintUnformatted(const cJSON *item)
 
 CJSON_PUBLIC(char *) cJSON_PrintBuffered(const cJSON *item, int prebuffer, cJSON_bool fmt)
 {
-    printbuffer p = { 0, 0, 0, 0, 0, 0, { 0, 0, 0 } };
+    printbuffer p = { 0, 0, 0, 0, 0, 0, { 0, 0, 0 }, 0, 0, 0 };
 
     if (prebuffer < 0)
     {
@@ -1388,7 +1406,7 @@ CJSON_PUBLIC(char *) cJSON_PrintBuffered(const cJSON *item, int prebuffer, cJSON
 
 CJSON_PUBLIC(cJSON_bool) cJSON_PrintPreallocated(cJSON *item, char *buffer, const int length, const cJSON_bool format)
 {
-    printbuffer p = { 0, 0, 0, 0, 0, 0, { 0, 0, 0 } };
+    printbuffer p = { 0, 0, 0, 0, 0, 0, { 0, 0, 0 }, 0, 0, 0 };
 
     if ((length < 0) || (buffer == NULL))
     {
@@ -1403,6 +1421,44 @@ CJSON_PUBLIC(cJSON_bool) cJSON_PrintPreallocated(cJSON *item, char *buffer, cons
     p.hooks = global_hooks;
 
     return print_value(item, &p);
+}
+
+CJSON_PUBLIC(int) cJSON_PrintStreamed(cJSON *item, char *staging, const int staging_length, cJSON_write_cb write_cb,
+                                      void *write_ctx, const cJSON_bool format)
+{
+    printbuffer p = { 0, 0, 0, 0, 0, 0, { 0, 0, 0 }, 0, 0, 0 };
+
+    if ((staging_length < 2) || (staging == NULL) || (write_cb == NULL))
+    {
+        return -1;
+    }
+
+    p.buffer = (unsigned char*)staging;
+    p.length = (size_t)staging_length;
+    p.offset = 0;
+    p.noalloc = true;
+    p.format = format;
+    p.hooks = global_hooks;
+    p.write_cb = write_cb;
+    p.write_ctx = write_ctx;
+    p.flushed = 0;
+
+    if (!print_value(item, &p))
+    {
+        return -1;
+    }
+
+    update_offset(&p);
+    if ((p.offset > 0) && (write_cb(write_ctx, (const char*)p.buffer, p.offset) != 0))
+    {
+        return -1;
+    }
+
+    if ((p.flushed + p.offset) > INT_MAX)
+    {
+        return -1;
+    }
+    return (int)(p.flushed + p.offset);
 }
 
 /* Parser core - when encountering text, process appropriately. */

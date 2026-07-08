@@ -176,6 +176,13 @@ CJSON_PUBLIC(char *) cJSON_PrintBuffered(const cJSON *item, int prebuffer, cJSON
 /* Render a cJSON entity to text using a buffer already allocated in memory with given length. Returns 1 on success and 0 on failure. */
 /* NOTE: cJSON is not always 100% accurate in estimating how much memory it will use, so to be safe allocate 5 bytes more than you actually need */
 CJSON_PUBLIC(cJSON_bool) cJSON_PrintPreallocated(cJSON *item, char *buffer, const int length, const cJSON_bool format);
+/* Callback receiving rendered bytes from cJSON_PrintStreamed. Return 0 to continue, non-zero to abort the print. */
+typedef int (*cJSON_write_cb)(void *ctx, const char *data, size_t length);
+/* Render a cJSON entity to text through write_cb, using a small preallocated staging buffer that is flushed whenever it fills up.
+ * The staging buffer must be large enough to hold the longest single token (typically the longest escaped string value) plus 1.
+ * Returns the total number of bytes emitted (excluding any null terminator), or -1 on failure. */
+CJSON_PUBLIC(int) cJSON_PrintStreamed(cJSON *item, char *staging, const int staging_length, cJSON_write_cb write_cb,
+                                      void *write_ctx, const cJSON_bool format);
 /* Delete a cJSON entity and all subentities. */
 CJSON_PUBLIC(void) cJSON_Delete(cJSON *item);
 
